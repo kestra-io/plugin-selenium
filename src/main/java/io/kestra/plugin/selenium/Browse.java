@@ -12,6 +12,7 @@ import io.kestra.core.runners.RunContext;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
+import lombok.AccessLevel;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.EqualsAndHashCode;
@@ -29,6 +30,7 @@ import org.openqa.selenium.WebElement;
 import org.openqa.selenium.remote.RemoteWebDriver;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
+import org.slf4j.Logger;
 
 import java.io.ByteArrayInputStream;
 import java.net.URI;
@@ -120,7 +122,6 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
     @Override
     public Output run(RunContext runContext) throws Exception {
         var logger = runContext.logger();
-        var driver = buildDriver(runContext);
 
         Map<String, Object> extracted = new HashMap<>();
         Map<String, URI> screenshots = new HashMap<>();
@@ -128,7 +129,9 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         Map<String, URI> downloads = new HashMap<>();
         int actionIndex = 0;
 
+        RemoteWebDriver driver = null;
         try {
+            driver = buildDriver(runContext);
             for (var action : actions) {
                 var actionType = action.getAction();
                 logger.info("Executing action [{}]: {}", actionIndex, actionType);
@@ -205,9 +208,15 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                             driver.findElement(By.cssSelector(rSelector)).click();
                         }
 
+                        if (!(driver instanceof HasDownloads)) {
+                            throw new IllegalStateException("DOWNLOAD requires a Grid node that supports managed downloads (CHROME or EDGE).");
+                        }
                         var hasDownloads = (HasDownloads) driver;
                         var stableFiles = pollForStableFiles(hasDownloads, rWaitTimeout);
 
+                        if (stableFiles.isEmpty()) {
+                            throw new IllegalStateException("No stable downloadable file found.");
+                        }
                         var toFetch = Boolean.TRUE.equals(rMultiple) ? stableFiles : List.of(stableFiles.getLast());
                         var tempDir = Files.createTempDirectory("kestra-selenium-download-");
                         try {
@@ -245,7 +254,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         } finally {
             // Emit metric before quitting so it is always recorded, even on failure.
             runContext.metric(Counter.of("actions.count", actionIndex));
-            driver.quit();
+            if (driver != null) driver.quit();
         }
 
         return Output.builder()
@@ -311,7 +320,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
     }
 
     private void warnOnKeyCollision(
-        org.slf4j.Logger logger, Map<?, ?> map, String key, ActionType actionType
+        Logger logger, Map<?, ?> map, String key, ActionType actionType
     ) {
         if (map.containsKey(key)) {
             logger.warn("{}: output key '{}' already exists and will be overwritten", actionType, key);
@@ -399,7 +408,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
     @Builder
     @Getter
     @NoArgsConstructor
-    @AllArgsConstructor
+    @AllArgsConstructor(access = AccessLevel.PACKAGE)
     public static class Output implements io.kestra.core.models.tasks.Output {
 
         @Schema(title = "Extracted texts", description = "Text values captured by EXTRACT_TEXT actions, keyed by id or extract_<index>.")

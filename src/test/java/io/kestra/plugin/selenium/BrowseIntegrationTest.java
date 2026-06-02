@@ -96,7 +96,7 @@ class BrowseIntegrationTest {
 
         // Verify that the BLOCKER-1 fix prevents temp/in-progress markers from being stored.
         var tempPattern = Pattern.compile(
-            "\\.crdownload$|\\.part$|^\\.com\\.google\\.Chrome\\.|^\\.org\\.chromium\\.Chromium\\.|^\\.download$"
+            "\\.crdownload$|\\.part$|\\.tmp$|^\\.com\\.google\\.Chrome\\.|^\\.org\\.chromium\\.Chromium\\.|^\\.download$"
         );
 
         assertThat(output.getDownloads(), not(anEmptyMap()));
