@@ -9,7 +9,7 @@
 services:
   selenium:
     # multi-arch (amd64 + arm64/Apple Silicon) Chromium image, 4.21.0+
-    image: selenium/standalone-chromium:latest
+    image: selenium/standalone-chromium:4.27.0
     shm_size: "2gb"
     ports:
       - "4444:4444"   # WebDriver / Grid endpoint
