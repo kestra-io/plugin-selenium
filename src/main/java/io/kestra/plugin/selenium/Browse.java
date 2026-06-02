@@ -36,7 +36,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -105,9 +104,10 @@ import java.util.regex.Pattern;
 @Metric(name = "actions.count", type = "counter", description = "Total number of actions executed.")
 public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.Output> {
 
-    // Matches Chromium in-progress download markers and other browser temp suffixes.
+    // Matches in-progress download markers: Chromium (.crdownload, .com.google.Chrome.*, .org.chromium.Chromium.*),
+    // Firefox (.part, .tmp), Edge (.download).
     private static final Pattern TEMP_DOWNLOAD_PATTERN = Pattern.compile(
-        "\\.crdownload$|\\.part$|^\\.com\\.google\\.Chrome\\.|^\\.org\\.chromium\\.Chromium\\.|^\\.download$"
+        "\\.crdownload$|\\.part$|\\.tmp$|^\\.com\\.google\\.Chrome\\.|^\\.org\\.chromium\\.Chromium\\.|^\\.download$"
     );
 
     // Plain List, not Property<List>, to avoid Jackson polymorphism issues with Action subtypes.
@@ -226,13 +226,17 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                                 }
                             }
                         } finally {
-                            // Delete the temp dir regardless of success or failure.
                             deleteTempDir(tempDir);
+                            // Clear the Grid node's download list so a subsequent DOWNLOAD action
+                            // does not re-see files from this action. Must run even when a per-file
+                            // op throws, otherwise the next DOWNLOAD in the same session will
+                            // re-process stale entries.
+                            try {
+                                hasDownloads.deleteDownloadableFiles();
+                            } catch (Exception e) {
+                                logger.warn("Failed to clear Grid download list after DOWNLOAD action", e);
+                            }
                         }
-
-                        // Clear the Grid node's download list so a subsequent DOWNLOAD action
-                        // does not re-see files from this action.
-                        hasDownloads.deleteDownloadableFiles();
                     }
                 }
 
@@ -254,22 +258,24 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
 
     /**
      * Polls until the Grid reports at least one non-temp file that is stable across two
-     * consecutive reads. Throws if the deadline passes without a stable result.
+     * consecutive reads. The deadline is checked after each sleep so a file that stabilizes
+     * near the boundary is not missed. Throws if no stable result is found after the deadline.
      */
     private List<String> pollForStableFiles(HasDownloads hasDownloads, Duration timeout) throws InterruptedException {
         var deadline = Instant.now().plus(timeout);
         List<String> previousStable = List.of();
 
-        while (Instant.now().isBefore(deadline)) {
-            var all = hasDownloads.getDownloadableFiles();
-            var stable = all.stream()
+        while (true) {
+            var stable = hasDownloads.getDownloadableFiles().stream()
                 .filter(f -> !TEMP_DOWNLOAD_PATTERN.matcher(f).find())
                 .toList();
-
             if (!stable.isEmpty() && stable.equals(previousStable)) {
                 return stable;
             }
             previousStable = stable;
+            if (Instant.now().isAfter(deadline)) {
+                break;
+            }
             Thread.sleep(500);
         }
 
@@ -290,20 +296,18 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
     }
 
     private void assertSerializable(Object result) {
-        if (result instanceof WebElement) {
+        if (containsWebElement(result)) {
             throw new IllegalArgumentException(
                 "EXECUTE_SCRIPT must return a JSON-serializable value, not a WebElement"
             );
         }
-        if (result instanceof List<?> list) {
-            for (var item : list) {
-                if (item instanceof WebElement) {
-                    throw new IllegalArgumentException(
-                        "EXECUTE_SCRIPT must return a JSON-serializable value, not a WebElement"
-                    );
-                }
-            }
-        }
+    }
+
+    private boolean containsWebElement(Object value) {
+        if (value instanceof WebElement) return true;
+        if (value instanceof List<?> l) return l.stream().anyMatch(this::containsWebElement);
+        if (value instanceof Map<?, ?> m) return m.values().stream().anyMatch(this::containsWebElement);
+        return false;
     }
 
     private void warnOnKeyCollision(
@@ -341,7 +345,8 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
             SCREENSHOT (capture the viewport),
             EXECUTE_SCRIPT (run JavaScript and capture the return value),
             DOWNLOAD (fetch files from the Selenium Grid node into Kestra internal storage;
-            if selector is set, clicks it first to trigger the download).
+            if selector is set, clicks it first to trigger the download;
+            most reliable with CHROME or EDGE, which support managed downloads natively).
             """)
         @NotNull
         @PluginProperty(group = "main")
@@ -398,15 +403,19 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
     public static class Output implements io.kestra.core.models.tasks.Output {
 
         @Schema(title = "Extracted texts", description = "Text values captured by EXTRACT_TEXT actions, keyed by id or extract_<index>.")
-        private Map<String, Object> extracted;
+        @Builder.Default
+        private Map<String, Object> extracted = new HashMap<>();
 
         @Schema(title = "Screenshots", description = "Internal storage URIs of screenshots, keyed by filename.")
-        private Map<String, URI> screenshots;
+        @Builder.Default
+        private Map<String, URI> screenshots = new HashMap<>();
 
         @Schema(title = "Script results", description = "Return values from EXECUTE_SCRIPT actions, keyed by id or script_<index>.")
-        private Map<String, Object> scriptResults;
+        @Builder.Default
+        private Map<String, Object> scriptResults = new HashMap<>();
 
         @Schema(title = "Downloads", description = "Internal storage URIs of files fetched by DOWNLOAD actions, keyed by the original filename.")
-        private Map<String, URI> downloads;
+        @Builder.Default
+        private Map<String, URI> downloads = new HashMap<>();
     }
 }

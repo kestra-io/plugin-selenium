@@ -1,7 +1,7 @@
 @PluginSubGroup(
     title = "Selenium",
     description = "Tasks that automate browsers via Selenium WebDriver.",
-    categories = { PluginSubGroup.PluginCategory.TOOL }
+    categories = { PluginSubGroup.PluginCategory.INFRASTRUCTURE }
 )
 package io.kestra.plugin.selenium;
 
