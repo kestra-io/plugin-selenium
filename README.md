@@ -1,64 +1,119 @@
 <p align="center">
   <a href="https://www.kestra.io">
-    <img src="https://kestra.io/banner.png"  alt="Kestra workflow orchestrator" />
+    <img src="https://kestra.io/banner.png" alt="Kestra workflow orchestrator" />
   </a>
 </p>
 
 <h1 align="center" style="border-bottom: none">
-    Event-Driven Declarative Orchestrator
+    Kestra Selenium Plugin
 </h1>
 
 <div align="center">
  <a href="https://github.com/kestra-io/kestra/releases"><img src="https://img.shields.io/github/tag-pre/kestra-io/kestra.svg?color=blueviolet" alt="Last Version" /></a>
   <a href="https://github.com/kestra-io/kestra/blob/develop/LICENSE"><img src="https://img.shields.io/github/license/kestra-io/kestra?color=blueviolet" alt="License" /></a>
-  <a href="https://github.com/kestra-io/kestra/stargazers"><img src="https://img.shields.io/github/stars/kestra-io/kestra?color=blueviolet&logo=github" alt="Github star" /></a> <br>
-<a href="https://kestra.io"><img src="https://img.shields.io/badge/Website-kestra.io-192A4E?color=blueviolet" alt="Kestra infinitely scalable orchestration and scheduling platform"></a>
-<a href="https://kestra.io/slack"><img src="https://img.shields.io/badge/Slack-Join%20Community-blueviolet?logo=slack" alt="Slack"></a>
+  <a href="https://github.com/kestra-io/kestra/stargazers"><img src="https://img.shields.io/github/stars/kestra-io/kestra?color=blueviolet&logo=github" alt="Github star" /></a>
 </div>
 
-<br />
+# Kestra Selenium Plugin
 
-<p align="center">
-  <a href="https://twitter.com/kestra_io" style="margin: 0 10px;">
-        <img src="https://kestra.io/twitter.svg" alt="twitter" width="35" height="25" /></a>
-  <a href="https://www.linkedin.com/company/kestra/" style="margin: 0 10px;">
-        <img src="https://kestra.io/linkedin.svg" alt="linkedin" width="35" height="25" /></a>
-  <a href="https://www.youtube.com/@kestra-io" style="margin: 0 10px;">
-        <img src="https://kestra.io/youtube.svg" alt="youtube" width="35" height="25" /></a>
-</p>
+Browser automation via Selenium Grid over the WebDriver protocol. Connects to a remote Selenium Grid, runs a sequence of browser actions, and stores outputs (text, screenshots, downloaded files) in Kestra internal storage.
 
-<br />
-<p align="center">
-    <a href="https://go.kestra.io/video/product-overview" target="_blank">
-        <img src="https://kestra.io/startvideo.png" alt="Get started in 3 minutes with Kestra" width="640px" />
-    </a>
-</p>
-<p align="center" style="color:grey;"><i>Get started with Kestra in 3 minutes.</i></p>
+## Task: Browse
 
-# Kestra Plugin Template
+Single task with 8 supported actions:
 
-## Why
+| Action | Description |
+|---|---|
+| `NAVIGATE` | Open a URL in the browser. |
+| `CLICK` | Click an element by CSS selector. |
+| `TYPE` | Send keystrokes to an element. |
+| `WAIT_FOR` | Wait until an element matching a CSS selector is present. |
+| `EXTRACT_TEXT` | Read text from one or more elements. |
+| `SCREENSHOT` | Capture the viewport and store the PNG in Kestra storage. |
+| `EXECUTE_SCRIPT` | Run JavaScript and capture the return value. |
+| `DOWNLOAD` | Click a download trigger (optional) and retrieve the resulting file(s) from the Grid node into Kestra storage. |
 
-- What user problem does this solve? Teams need a concrete starting point for building and validating new Kestra plugins without recreating the same project scaffolding from scratch.
-- Why would a team adopt this plugin in a workflow? It gives plugin authors a ready-made reference repo they can adapt alongside their own build, test, and publishing workflow.
-- What operational/business outcome does it enable? It shortens plugin delivery time, reduces setup mistakes, and makes internal or partner plugin development more repeatable.
+## Connection properties
 
-## What
+| Property | Required | Default | Description |
+|---|---|---|---|
+| `remoteUrl` | yes | | Selenium Grid WebDriver URL. |
+| `browser` | no | `CHROME` | Browser type: `CHROME`, `FIREFOX`, `EDGE`. |
+| `headless` | no | `true` | Run without a display. |
+| `pageLoadTimeout` | no | `PT30S` | Maximum time to wait for page load. |
+| `capabilities` | no | | Extra capabilities merged into browser options. Values are passed unvalidated; only set from trusted sources. |
 
-- Provides plugin components under `io.kestra.plugin.templates`.
-- Includes classes such as `Example`, `Trigger`.
+## Examples
 
-## Documentation
-* Full documentation can be found under: [kestra.io/docs](https://kestra.io/docs)
-* Documentation for developing a plugin is included in the [Plugin Developer Guide](https://kestra.io/docs/plugin-developer-guide/)
+Navigate to a page and extract text:
 
+```yaml
+id: selenium_browse
+namespace: company.team
+
+tasks:
+  - id: browse
+    type: io.kestra.plugin.selenium.Browse
+    remoteUrl: "{{ secret('SELENIUM_GRID_URL') }}"
+    actions:
+      - action: NAVIGATE
+        url: "https://example.com"
+      - action: EXTRACT_TEXT
+        id: heading
+        selector: "h1"
+      - action: SCREENSHOT
+        name: "result.png"
+```
+
+Download a file and store it in Kestra:
+
+```yaml
+id: selenium_download
+namespace: company.team
+
+tasks:
+  - id: browse
+    type: io.kestra.plugin.selenium.Browse
+    remoteUrl: "{{ secret('SELENIUM_GRID_URL') }}"
+    actions:
+      - action: NAVIGATE
+        url: "https://the-internet.herokuapp.com/download"
+      - action: WAIT_FOR
+        selector: ".example a"
+      - action: DOWNLOAD
+        selector: ".example a:first-of-type"
+```
+
+## Security notes
+
+**SSRF**: The Grid node opens any URL passed to `NAVIGATE`, including addresses reachable only from
+the Grid host's network (internal services, cloud metadata endpoints, etc.). Restrict Grid egress
+with network policy when running in shared or multi-tenant environments.
+
+**Capabilities**: values in `capabilities` are passed unvalidated to the browser and Grid. Only set
+them from trusted sources.
+
+**TYPE value**: the `value` field for TYPE actions is marked `secret = true` and will be masked in
+logs and the Kestra UI. Use it for passwords and keys.
+
+## Running integration tests
+
+Start the Grid:
+
+```bash
+docker compose -f docker-compose-ci.yml up -d
+```
+
+Run tests against it:
+
+```bash
+export SELENIUM_GRID_URL=http://localhost:4444
+./gradlew test --rerun-tasks
+```
+
+Integration tests are gated on the `SELENIUM_GRID_URL` environment variable and are skipped when it
+is not set.
 
 ## License
+
 Apache 2.0 © [Kestra Technologies](https://kestra.io)
-
-
-## Stay up to date
-
-We release new versions every month. Give the [main repository](https://github.com/kestra-io/kestra) a star to stay up to date with the latest releases and get notified about future updates.
-
-![Star the repo](https://kestra.io/star.gif)
