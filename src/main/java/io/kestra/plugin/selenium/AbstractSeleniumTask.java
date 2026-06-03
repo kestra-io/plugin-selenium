@@ -116,7 +116,14 @@ public abstract class AbstractSeleniumTask extends Task {
         opts.setCapability("webSocketUrl", false);
         var executor = new HttpCommandExecutor(clientConfig);
         var driver = new RemoteWebDriver(executor, opts);
-        driver.manage().timeouts().pageLoadTimeout(rTimeout);
+        // The session is live once the constructor returns; quit it if any further
+        // setup fails so we never leak a session on the Grid.
+        try {
+            driver.manage().timeouts().pageLoadTimeout(rTimeout);
+        } catch (Exception e) {
+            driver.quit();
+            throw e;
+        }
         return driver;
     }
 

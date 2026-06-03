@@ -275,8 +275,10 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         List<String> previousStable = List.of();
 
         while (true) {
+            // Sort so stability is decided by the set of names, not the Grid's listing order.
             var stable = hasDownloads.getDownloadableFiles().stream()
                 .filter(f -> !TEMP_DOWNLOAD_PATTERN.matcher(f).find())
+                .sorted()
                 .toList();
             if (!stable.isEmpty() && stable.equals(previousStable)) {
                 return stable;
