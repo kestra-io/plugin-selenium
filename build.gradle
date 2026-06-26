@@ -2,6 +2,7 @@ plugins {
     id 'io.kestra.gradle.repository-conventions' version '1.2.3'
     id "com.vanniktech.maven.publish" version "0.36.0"
     id "io.kestra.gradle.inject-bom-versions" version "1.1.0"
+    id "io.kestra.gradle.plugin-doc-lint" version "1.2.4"
     id 'java-library'
     id "idea"
     id 'jacoco'
@@ -30,7 +31,7 @@ java {
 }
 
 group = "io.kestra.plugin"
-description = 'Plugin template for Kestra'
+description = 'Selenium plugin for Kestra'
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
@@ -50,6 +51,9 @@ dependencies {
     annotationProcessor group: "io.kestra", name: "processor", version: kestraVersion
     compileOnly group: "io.kestra", name: "core", version: kestraVersion
     compileOnly group: "io.kestra", name: "script", version: kestraVersion
+
+    // selenium
+    implementation "org.seleniumhq.selenium:selenium-java:4.27.0"
 }
 
 
@@ -176,8 +180,8 @@ jar {
     manifest {
         attributes(
             "X-Kestra-Name": project.name,
-            "X-Kestra-Title": "Template",
-            "X-Kestra-Group": project.group + ".templates",
+            "X-Kestra-Title": "Selenium",
+            "X-Kestra-Group": project.group + ".selenium",
             "X-Kestra-Description": project.description,
             "X-Kestra-Version": project.version
         )

@@ -1,8 +1,8 @@
-group: io.kestra.plugin.template
-name: "template"
-title: "Template"
-description: "Plugin template for Kestra"
-body: ""
+group: io.kestra.plugin.selenium
+name: "selenium"
+title: "Selenium"
+description: "Automate browsers via Selenium WebDriver from Kestra workflows."
+body: "Connect to any Selenium Grid or standalone browser container and drive it with a declarative list of actions: navigate, click, type, wait for elements, extract text, capture screenshots, run JavaScript, and download files served by the page. All actions execute in a single session, and results are available as structured task outputs."
 videos: []
 createdBy: "Kestra Core Team"
 managedBy: "Kestra Core Team"
