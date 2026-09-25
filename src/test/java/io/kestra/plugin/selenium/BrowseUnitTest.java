@@ -33,6 +33,13 @@ class BrowseUnitTest {
     }
 
     @Test
+    void givenSeleniumException_whenShortMessage_thenFooterIsDropped() {
+        var e = new org.openqa.selenium.TimeoutException("Expected condition failed: waiting for #x");
+        assertThat(e.getMessage(), containsString("Build info"));
+        assertThat(Browse.shortMessage(e), is("Expected condition failed: waiting for #x"));
+    }
+
+    @Test
     void givenStableFilenames_whenMatchingPattern_thenDoesNotMatch() {
         assertThat(Browse.TEMP_DOWNLOAD_PATTERN.matcher("report.csv").find(), is(false));
         assertThat(Browse.TEMP_DOWNLOAD_PATTERN.matcher("archive.tar.gz").find(), is(false));

@@ -241,7 +241,10 @@ class BrowseIntegrationTest {
 
         var runContext = runContextFactory.of();
 
-        assertThrows(IllegalStateException.class, () -> task.run(runContext));
+        var e = assertThrows(IllegalStateException.class, () -> task.run(runContext));
+        assertThat(e.getMessage(), containsString("element not found for selector"));
+        assertThat(e.getMessage(), not(containsString("Capabilities")));
+        assertThat(e.getCause(), nullValue());
     }
 
     @Test

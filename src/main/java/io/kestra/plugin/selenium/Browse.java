@@ -24,6 +24,7 @@ import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.OutputType;
 import org.openqa.selenium.TakesScreenshot;
 import org.openqa.selenium.TimeoutException;
+import org.openqa.selenium.WebDriverException;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.remote.RemoteWebDriver;
 import org.openqa.selenium.support.ui.ExpectedConditions;
@@ -130,166 +131,175 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         RemoteWebDriver driver = null;
         try {
             var downloadsEnabled = actions.stream().anyMatch(a -> a.getAction() == ActionType.DOWNLOAD);
-            driver = buildDriver(runContext, downloadsEnabled);
+            try {
+                driver = buildDriver(runContext, downloadsEnabled);
+            } catch (WebDriverException e) {
+                throw new IllegalStateException("Failed to create a browser session on the Grid: " + shortMessage(e));
+            }
             for (var action : actions) {
                 var actionType = action.getAction();
                 logger.info("Executing action [{}]: {}", actionIndex, actionType);
 
-                switch (actionType) {
-                    case NAVIGATE -> {
-                        var rUrl = runContext.render(action.getUrl()).as(String.class).orElseThrow(
-                            () -> new IllegalArgumentException("url is required for NAVIGATE")
-                        );
-                        driver.get(rUrl);
-                    }
-                    case CLICK -> {
-                        var rSelector = renderSelector(runContext, action, actionType);
-                        var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
-                        try {
-                            new WebDriverWait(driver, rWaitTimeout)
-                                .until(ExpectedConditions.elementToBeClickable(By.cssSelector(rSelector)))
-                                .click();
-                        } catch (TimeoutException e) {
-                            throw new IllegalStateException(
-                                "CLICK: element not found for selector '" + rSelector + "'", e
+                try {
+                    switch (actionType) {
+                        case NAVIGATE -> {
+                            var rUrl = runContext.render(action.getUrl()).as(String.class).orElseThrow(
+                                () -> new IllegalArgumentException("url is required for NAVIGATE")
                             );
+                            driver.get(rUrl);
                         }
-                    }
-                    case TYPE -> {
-                        var rSelector = renderSelector(runContext, action, actionType);
-                        var rValue = runContext.render(action.getValue()).as(String.class).orElseThrow(
-                            () -> new IllegalArgumentException("value is required for TYPE")
-                        );
-                        var rClear = runContext.render(action.getClear()).as(Boolean.class).orElse(false);
-                        var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
-                        WebElement element;
-                        try {
-                            element = new WebDriverWait(driver, rWaitTimeout)
-                                .until(ExpectedConditions.elementToBeClickable(By.cssSelector(rSelector)));
-                        } catch (TimeoutException e) {
-                            throw new IllegalStateException(
-                                "TYPE: element not found for selector '" + rSelector + "'", e
-                            );
-                        }
-                        if (Boolean.TRUE.equals(rClear)) {
-                            element.clear();
-                        }
-                        element.sendKeys(rValue);
-                    }
-                    case WAIT_FOR -> {
-                        var rSelector = renderSelector(runContext, action, actionType);
-                        var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
-                        var rCondition = runContext.render(action.getCondition()).as(WaitCondition.class).orElse(WaitCondition.PRESENT);
-                        var locator = By.cssSelector(rSelector);
-                        var wait = new WebDriverWait(driver, rWaitTimeout);
-                        switch (rCondition) {
-                            case PRESENT -> wait.until(ExpectedConditions.presenceOfElementLocated(locator));
-                            case VISIBLE -> wait.until(ExpectedConditions.visibilityOfElementLocated(locator));
-                            case CLICKABLE -> wait.until(ExpectedConditions.elementToBeClickable(locator));
-                        }
-                    }
-                    case EXTRACT_TEXT -> {
-                        var rSelector = renderSelector(runContext, action, actionType);
-                        var rMultiple = runContext.render(action.getMultiple()).as(Boolean.class).orElse(false);
-                        var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
-                        var key = outputKey(runContext, action, actionIndex, "extract");
-                        warnOnKeyCollision(logger, extracted, key, actionType);
-                        if (Boolean.TRUE.equals(rMultiple)) {
+                        case CLICK -> {
+                            var rSelector = renderSelector(runContext, action, actionType);
+                            var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
                             try {
                                 new WebDriverWait(driver, rWaitTimeout)
-                                    .until(ExpectedConditions.presenceOfElementLocated(By.cssSelector(rSelector)));
-                            } catch (TimeoutException e) {
-                                logger.warn("EXTRACT_TEXT: no elements matched selector '{}' within {}", rSelector, rWaitTimeout);
-                            }
-                            var elements = driver.findElements(By.cssSelector(rSelector));
-                            extracted.put(key, elements.stream().map(WebElement::getText).toList());
-                        } else {
-                            try {
-                                var element = new WebDriverWait(driver, rWaitTimeout)
-                                    .until(ExpectedConditions.visibilityOfElementLocated(By.cssSelector(rSelector)));
-                                extracted.put(key, element.getText());
+                                    .until(ExpectedConditions.elementToBeClickable(By.cssSelector(rSelector)))
+                                    .click();
                             } catch (TimeoutException e) {
                                 throw new IllegalStateException(
-                                    "EXTRACT_TEXT: element not found for selector '" + rSelector + "'", e
+                                    "CLICK: element not found for selector '" + rSelector + "' within " + rWaitTimeout
                                 );
                             }
                         }
-                    }
-                    case SCREENSHOT -> {
-                        var rName = runContext.render(action.getName()).as(String.class).orElse("screenshot_" + actionIndex + ".png");
-                        warnOnKeyCollision(logger, screenshots, rName, actionType);
-                        var bytes = ((TakesScreenshot) driver).getScreenshotAs(OutputType.BYTES);
-                        var uri = runContext.storage().putFile(new ByteArrayInputStream(bytes), rName);
-                        screenshots.put(rName, uri);
-                    }
-                    case EXECUTE_SCRIPT -> {
-                        var rScript = runContext.render(action.getScript()).as(String.class).orElseThrow(
-                            () -> new IllegalArgumentException("script is required for EXECUTE_SCRIPT")
-                        );
-                        var key = outputKey(runContext, action, actionIndex, "script");
-                        warnOnKeyCollision(logger, scriptResults, key, actionType);
-                        var result = ((JavascriptExecutor) driver).executeScript(rScript);
-                        assertSerializable(result);
-                        scriptResults.put(key, result);
-                    }
-                    case DOWNLOAD -> {
-                        var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(30));
-                        var rMultiple = runContext.render(action.getMultiple()).as(Boolean.class).orElse(false);
-
-                        // Snapshot before the click so only files added by this action are fetched.
-                        List<String> before;
-                        try {
-                            before = driver.getDownloadableFiles();
-                        } catch (Exception e) {
-                            throw new IllegalStateException(
-                                "DOWNLOAD requires the Grid node to have managed downloads enabled "
-                                    + "(SE_NODE_ENABLE_MANAGED_DOWNLOADS=true).", e
+                        case TYPE -> {
+                            var rSelector = renderSelector(runContext, action, actionType);
+                            var rValue = runContext.render(action.getValue()).as(String.class).orElseThrow(
+                                () -> new IllegalArgumentException("value is required for TYPE")
                             );
-                        }
-
-                        // Click the trigger element if a selector is provided.
-                        var rSelector = runContext.render(action.getSelector()).as(String.class).orElse(null);
-                        if (rSelector != null) {
-                            driver.findElement(By.cssSelector(rSelector)).click();
-                        }
-
-                        var newStableFiles = pollForNewStableFiles(driver, before, rWaitTimeout);
-                        if (!Boolean.TRUE.equals(rMultiple) && newStableFiles.size() > 1) {
-                            throw new IllegalStateException(
-                                "DOWNLOAD found " + newStableFiles.size() + " new files (" + newStableFiles
-                                    + ") but multiple is false. Set multiple: true to fetch all of them."
-                            );
-                        }
-                        var toFetch = Boolean.TRUE.equals(rMultiple) ? newStableFiles : List.of(newStableFiles.getFirst());
-                        var tempDir = Files.createTempDirectory("kestra-selenium-download-");
-                        try {
-                            for (var fileName : toFetch) {
-                                var localFile = tempDir.resolve(fileName).normalize();
-                                // Guard against path traversal via Grid-supplied filenames.
-                                if (!localFile.startsWith(tempDir)) {
-                                    throw new SecurityException("Illegal filename from Grid: " + fileName);
-                                }
-                                driver.downloadFile(fileName, tempDir);
-                                warnOnKeyCollision(logger, downloads, fileName, actionType);
-                                try (var in = Files.newInputStream(localFile)) {
-                                    var uri = runContext.storage().putFile(in, fileName);
-                                    downloads.put(fileName, uri);
-                                    logger.info("Downloaded file '{}' -> {}", fileName, uri);
-                                }
-                            }
-                        } finally {
-                            deleteTempDir(tempDir);
-                            // Clear the Grid node's download list so a subsequent DOWNLOAD action
-                            // does not re-see files from this action. Must run even when a per-file
-                            // op throws, otherwise the next DOWNLOAD in the same session will
-                            // re-process stale entries.
+                            var rClear = runContext.render(action.getClear()).as(Boolean.class).orElse(false);
+                            var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
+                            WebElement element;
                             try {
-                                driver.deleteDownloadableFiles();
+                                element = new WebDriverWait(driver, rWaitTimeout)
+                                    .until(ExpectedConditions.elementToBeClickable(By.cssSelector(rSelector)));
+                            } catch (TimeoutException e) {
+                                throw new IllegalStateException(
+                                    "TYPE: element not found for selector '" + rSelector + "' within " + rWaitTimeout
+                                );
+                            }
+                            if (Boolean.TRUE.equals(rClear)) {
+                                element.clear();
+                            }
+                            element.sendKeys(rValue);
+                        }
+                        case WAIT_FOR -> {
+                            var rSelector = renderSelector(runContext, action, actionType);
+                            var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
+                            var rCondition = runContext.render(action.getCondition()).as(WaitCondition.class).orElse(WaitCondition.PRESENT);
+                            var locator = By.cssSelector(rSelector);
+                            var wait = new WebDriverWait(driver, rWaitTimeout);
+                            switch (rCondition) {
+                                case PRESENT -> wait.until(ExpectedConditions.presenceOfElementLocated(locator));
+                                case VISIBLE -> wait.until(ExpectedConditions.visibilityOfElementLocated(locator));
+                                case CLICKABLE -> wait.until(ExpectedConditions.elementToBeClickable(locator));
+                            }
+                        }
+                        case EXTRACT_TEXT -> {
+                            var rSelector = renderSelector(runContext, action, actionType);
+                            var rMultiple = runContext.render(action.getMultiple()).as(Boolean.class).orElse(false);
+                            var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
+                            var key = outputKey(runContext, action, actionIndex, "extract");
+                            warnOnKeyCollision(logger, extracted, key, actionType);
+                            if (Boolean.TRUE.equals(rMultiple)) {
+                                try {
+                                    new WebDriverWait(driver, rWaitTimeout)
+                                        .until(ExpectedConditions.presenceOfElementLocated(By.cssSelector(rSelector)));
+                                } catch (TimeoutException e) {
+                                    logger.warn("EXTRACT_TEXT: no elements matched selector '{}' within {}", rSelector, rWaitTimeout);
+                                }
+                                var elements = driver.findElements(By.cssSelector(rSelector));
+                                extracted.put(key, elements.stream().map(WebElement::getText).toList());
+                            } else {
+                                try {
+                                    var element = new WebDriverWait(driver, rWaitTimeout)
+                                        .until(ExpectedConditions.visibilityOfElementLocated(By.cssSelector(rSelector)));
+                                    extracted.put(key, element.getText());
+                                } catch (TimeoutException e) {
+                                    throw new IllegalStateException(
+                                        "EXTRACT_TEXT: element not found for selector '" + rSelector + "' within " + rWaitTimeout
+                                    );
+                                }
+                            }
+                        }
+                        case SCREENSHOT -> {
+                            var rName = runContext.render(action.getName()).as(String.class).orElse("screenshot_" + actionIndex + ".png");
+                            warnOnKeyCollision(logger, screenshots, rName, actionType);
+                            var bytes = ((TakesScreenshot) driver).getScreenshotAs(OutputType.BYTES);
+                            var uri = runContext.storage().putFile(new ByteArrayInputStream(bytes), rName);
+                            screenshots.put(rName, uri);
+                        }
+                        case EXECUTE_SCRIPT -> {
+                            var rScript = runContext.render(action.getScript()).as(String.class).orElseThrow(
+                                () -> new IllegalArgumentException("script is required for EXECUTE_SCRIPT")
+                            );
+                            var key = outputKey(runContext, action, actionIndex, "script");
+                            warnOnKeyCollision(logger, scriptResults, key, actionType);
+                            var result = ((JavascriptExecutor) driver).executeScript(rScript);
+                            assertSerializable(result);
+                            scriptResults.put(key, result);
+                        }
+                        case DOWNLOAD -> {
+                            var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(30));
+                            var rMultiple = runContext.render(action.getMultiple()).as(Boolean.class).orElse(false);
+
+                            // Snapshot before the click so only files added by this action are fetched.
+                            List<String> before;
+                            try {
+                                before = driver.getDownloadableFiles();
                             } catch (Exception e) {
-                                logger.warn("Failed to clear Grid download list after DOWNLOAD action", e);
+                                throw new IllegalStateException(
+                                    "DOWNLOAD requires the Grid node to have managed downloads enabled "
+                                        + "(SE_NODE_ENABLE_MANAGED_DOWNLOADS=true): " + shortMessage(e)
+                                );
+                            }
+
+                            // Click the trigger element if a selector is provided.
+                            var rSelector = runContext.render(action.getSelector()).as(String.class).orElse(null);
+                            if (rSelector != null) {
+                                driver.findElement(By.cssSelector(rSelector)).click();
+                            }
+
+                            var newStableFiles = pollForNewStableFiles(driver, before, rWaitTimeout);
+                            if (!Boolean.TRUE.equals(rMultiple) && newStableFiles.size() > 1) {
+                                throw new IllegalStateException(
+                                    "DOWNLOAD found " + newStableFiles.size() + " new files (" + newStableFiles
+                                        + ") but multiple is false. Set multiple: true to fetch all of them."
+                                );
+                            }
+                            var toFetch = Boolean.TRUE.equals(rMultiple) ? newStableFiles : List.of(newStableFiles.getFirst());
+                            var tempDir = Files.createTempDirectory("kestra-selenium-download-");
+                            try {
+                                for (var fileName : toFetch) {
+                                    var localFile = tempDir.resolve(fileName).normalize();
+                                    // Guard against path traversal via Grid-supplied filenames.
+                                    if (!localFile.startsWith(tempDir)) {
+                                        throw new SecurityException("Illegal filename from Grid: " + fileName);
+                                    }
+                                    driver.downloadFile(fileName, tempDir);
+                                    warnOnKeyCollision(logger, downloads, fileName, actionType);
+                                    try (var in = Files.newInputStream(localFile)) {
+                                        var uri = runContext.storage().putFile(in, fileName);
+                                        downloads.put(fileName, uri);
+                                        logger.info("Downloaded file '{}' -> {}", fileName, uri);
+                                    }
+                                }
+                            } finally {
+                                deleteTempDir(tempDir);
+                                // Clear the Grid node's download list so a subsequent DOWNLOAD action
+                                // does not re-see files from this action. Must run even when a per-file
+                                // op throws, otherwise the next DOWNLOAD in the same session will
+                                // re-process stale entries.
+                                try {
+                                    driver.deleteDownloadableFiles();
+                                } catch (Exception e) {
+                                    logger.warn("Failed to clear Grid download list after DOWNLOAD action: {}", shortMessage(e));
+                                }
                             }
                         }
                     }
+                } catch (WebDriverException e) {
+                    // Selenium messages append build, system and capability dumps (internal Grid IPs, session id).
+                    throw new IllegalStateException(actionType + " failed at action [" + actionIndex + "]: " + shortMessage(e));
                 }
 
                 actionIndex++;
@@ -335,6 +345,15 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
             .filter(f -> !TEMP_DOWNLOAD_PATTERN.matcher(f).find())
             .sorted()
             .toList();
+    }
+
+    // First line of the raw Selenium message, without its build/system/capabilities footer.
+    static String shortMessage(Exception e) {
+        var raw = e instanceof WebDriverException w ? w.getRawMessage() : e.getMessage();
+        if (raw == null || raw.isBlank()) {
+            return e.getClass().getSimpleName();
+        }
+        return raw.lines().findFirst().orElse(raw).strip();
     }
 
     private void deleteTempDir(Path dir) {
