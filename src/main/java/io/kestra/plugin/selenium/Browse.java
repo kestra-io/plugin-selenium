@@ -105,7 +105,7 @@ import java.util.regex.Pattern;
 public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.Output> {
 
     // Matches in-progress download markers: Chromium (.crdownload, .com.google.Chrome.*, .org.chromium.Chromium.*),
-    // Firefox (.part, .tmp), Edge (.download). Package-private so tests can exercise it directly.
+    // Firefox (.part, .tmp), Edge (.download).
     static final Pattern TEMP_DOWNLOAD_PATTERN = Pattern.compile(
         "\\.crdownload$|\\.part$|\\.tmp$|^\\.com\\.google\\.Chrome\\.|^\\.org\\.chromium\\.Chromium\\.|^\\.download$"
     );
@@ -236,8 +236,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                         var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(30));
                         var rMultiple = runContext.render(action.getMultiple()).as(Boolean.class).orElse(false);
 
-                        // Snapshot before the click so only files added by this action are considered:
-                        // otherwise a pre-existing file could be picked up as "the" download.
+                        // Snapshot before the click so only files added by this action are fetched.
                         List<String> before;
                         try {
                             before = driver.getDownloadableFiles();
@@ -309,12 +308,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
             .build();
     }
 
-    /**
-     * Polls until the Grid reports at least one file that is both new (absent from {@code before})
-     * and stable across two consecutive reads. The deadline is checked after each sleep so a file
-     * that stabilizes near the boundary is not missed. Throws if no stable result is found after
-     * the deadline.
-     */
+    // Polls until the new, non-temp file set is non-empty and identical across two reads.
     private List<String> pollForNewStableFiles(RemoteWebDriver driver, List<String> before, Duration timeout) throws InterruptedException {
         var deadline = Instant.now().plus(timeout);
         List<String> previousStable = List.of();
@@ -334,11 +328,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         throw new IllegalStateException("No new stable downloadable file appeared within " + timeout);
     }
 
-    /**
-     * Filters the Grid's current downloadable-file listing down to files that are both new
-     * (absent from {@code before}) and not still in-progress, sorted so stability comparisons
-     * do not depend on the Grid's listing order. Package-private static for unit testing.
-     */
+    // New, finished files only, sorted so stability does not depend on Grid listing order.
     static List<String> selectNewStableFiles(List<String> before, List<String> current) {
         return current.stream()
             .filter(f -> !before.contains(f))

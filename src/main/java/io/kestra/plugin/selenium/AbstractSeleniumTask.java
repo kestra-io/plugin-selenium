@@ -125,10 +125,10 @@ public abstract class AbstractSeleniumTask extends Task {
         if (!rCaps.isEmpty()) {
             rCaps.forEach(opts::setCapability);
         }
+        // Only set for DOWNLOAD: bare WebDriver endpoints may reject unknown capabilities.
         if (downloadsEnabled) {
             // Required for Selenium Grid managed downloads: the node streams the file back to the client
-            // via the Grid relay instead of writing to the container filesystem. Only set when a
-            // DOWNLOAD action is present: some bare WebDriver endpoints reject unknown capabilities.
+            // via the Grid relay instead of writing to the container filesystem.
             opts.setCapability("se:downloadsEnabled", true);
         }
         // Disable BiDi/CDP websocket: the builder's augmentation opens a websocket to the node's
