@@ -1,45 +1,65 @@
-# Kestra Template Plugin
+# Kestra Selenium Plugin
 
 ## What
 
-- Provides plugin components under `io.kestra.plugin.templates`.
-- Includes classes such as `Example`, `Trigger`.
+Browser automation plugin for Kestra. Connects to a Selenium Grid and runs ordered browser actions
+within a single WebDriver session.
+
+Single task class: `io.kestra.plugin.selenium.Browse`.
+
+8 supported action types: `NAVIGATE`, `CLICK`, `TYPE`, `WAIT_FOR`, `EXTRACT_TEXT`, `SCREENSHOT`,
+`EXECUTE_SCRIPT`, `DOWNLOAD`.
 
 ## Why
 
-- What user problem does this solve? Teams need a concrete starting point for building and validating new Kestra plugins without recreating the same project scaffolding from scratch.
-- Why would a team adopt this plugin in a workflow? It gives plugin authors a ready-made reference repo they can adapt alongside their own build, test, and publishing workflow.
-- What operational/business outcome does it enable? It shortens plugin delivery time, reduces setup mistakes, and makes internal or partner plugin development more repeatable.
+Teams need to automate browser interactions (scraping, form submission, file downloads, UI testing)
+from Kestra flows without maintaining separate scripting infrastructure. This plugin keeps browser
+steps in the same flow as upstream data preparation, approvals, and downstream processing.
 
 ## How
 
 ### Architecture
 
-Single-module plugin. Source packages under `io.kestra.plugin`:
+Single-module Gradle plugin. All classes under `io.kestra.plugin.selenium`.
 
-- `templates`
+The `AbstractSeleniumTask` base class builds the `RemoteWebDriver` against a Selenium Grid endpoint.
+`Browse` extends it, iterates the `actions` list, and writes results to its `Output`.
 
-Infrastructure dependencies (Docker Compose services):
+Managed downloads use the Selenium Grid `HasDownloads` API (`se:downloadsEnabled` capability). The
+plugin polls for stable (non-temp) filenames before transferring files to Kestra storage.
 
-- `app`
+### Key classes
 
-### Key Plugin Classes
+- `io.kestra.plugin.selenium.AbstractSeleniumTask`: driver construction, connection properties.
+- `io.kestra.plugin.selenium.Browse`: the task; contains `Action`, `ActionType`, `Output`.
 
-- `io.kestra.plugin.templates.Example`
-
-### Project Structure
+### Project structure
 
 ```
-plugin-template/
-├── src/main/java/io/kestra/plugin/templates/
-├── src/test/java/io/kestra/plugin/templates/
+plugin-selenium/
+├── src/main/java/io/kestra/plugin/selenium/
+│   ├── AbstractSeleniumTask.java
+│   ├── Browse.java
+│   └── package-info.java
+├── src/test/java/io/kestra/plugin/selenium/
+│   ├── BrowseIntegrationTest.java   (requires SELENIUM_GRID_URL env var)
+│   └── BrowseUnitTest.java          (no browser required)
+├── docker-compose-ci.yml            (standalone-chromium for CI)
 ├── build.gradle
 └── README.md
 ```
 
-## Local rules
+### Running tests
 
-- Base the wording on the implemented packages and classes, not on template README text.
+```bash
+# Unit tests only (no browser needed)
+./gradlew test
+
+# With integration tests
+export SELENIUM_GRID_URL=http://localhost:4444
+docker compose -f docker-compose-ci.yml up -d
+./gradlew test --rerun-tasks
+```
 
 ## References
 
