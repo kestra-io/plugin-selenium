@@ -31,7 +31,17 @@ Single task with 8 supported actions:
 | `EXTRACT_TEXT` | Read text from one or more elements. |
 | `SCREENSHOT` | Capture the viewport and store the PNG in Kestra storage. |
 | `EXECUTE_SCRIPT` | Run JavaScript and capture the return value. |
-| `DOWNLOAD` | Click a download trigger (optional) and retrieve the resulting file(s) from the Grid node into Kestra storage. |
+| `DOWNLOAD` | Click a download trigger (optional) and retrieve the resulting file(s) from the Grid node into Kestra storage. Requires the Grid node to have managed downloads enabled (`SE_NODE_ENABLE_MANAGED_DOWNLOADS=true`). |
+
+`CLICK`, `TYPE`, and `EXTRACT_TEXT` (single element) wait for the target element using `waitTimeout`
+(default `PT10S`) before failing with a clear error. `EXTRACT_TEXT` with `multiple: true` waits for
+at least one matching element but falls back to an empty list with a warning if none appear in time.
+`WAIT_FOR` accepts a `condition` (`PRESENT`, `VISIBLE`, `CLICKABLE`, default `PRESENT`). `TYPE`
+accepts `clear: true` to clear the field before sending keys.
+
+`DOWNLOAD` only considers files that appear after the action starts, so a stale file already on the
+Grid node is never picked up. If more than one new file appears and `multiple` is not set to `true`,
+the task fails and lists the file names.
 
 ## Connection properties
 
@@ -41,6 +51,7 @@ Single task with 8 supported actions:
 | `browser` | no | `CHROME` | Browser type: `CHROME`, `FIREFOX`, `EDGE`. |
 | `headless` | no | `true` | Run without a display. |
 | `pageLoadTimeout` | no | `PT30S` | Maximum time to wait for page load. |
+| `username` / `password` | no | | HTTP basic auth for the Grid endpoint. Both must be set together, or neither. `password` is masked as a secret. |
 | `capabilities` | no | | Extra capabilities merged into browser options. Values are passed unvalidated; only set from trusted sources. |
 
 ## Examples

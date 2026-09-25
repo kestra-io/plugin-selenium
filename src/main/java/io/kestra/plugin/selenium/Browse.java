@@ -6,7 +6,6 @@ import io.kestra.core.models.annotations.Plugin;
 import io.kestra.core.models.annotations.PluginProperty;
 import io.kestra.core.models.executions.metrics.Counter;
 import io.kestra.core.models.property.Property;
-import io.kestra.core.models.tasks.Output;
 import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.runners.RunContext;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -21,11 +20,10 @@ import lombok.NoArgsConstructor;
 import lombok.ToString;
 import lombok.experimental.SuperBuilder;
 import org.openqa.selenium.By;
-import org.openqa.selenium.HasDownloads;
 import org.openqa.selenium.JavascriptExecutor;
-import org.openqa.selenium.NoSuchElementException;
 import org.openqa.selenium.OutputType;
 import org.openqa.selenium.TakesScreenshot;
+import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.remote.RemoteWebDriver;
 import org.openqa.selenium.support.ui.ExpectedConditions;
@@ -107,8 +105,8 @@ import java.util.regex.Pattern;
 public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.Output> {
 
     // Matches in-progress download markers: Chromium (.crdownload, .com.google.Chrome.*, .org.chromium.Chromium.*),
-    // Firefox (.part, .tmp), Edge (.download).
-    private static final Pattern TEMP_DOWNLOAD_PATTERN = Pattern.compile(
+    // Firefox (.part, .tmp), Edge (.download). Package-private so tests can exercise it directly.
+    static final Pattern TEMP_DOWNLOAD_PATTERN = Pattern.compile(
         "\\.crdownload$|\\.part$|\\.tmp$|^\\.com\\.google\\.Chrome\\.|^\\.org\\.chromium\\.Chromium\\.|^\\.download$"
     );
 
@@ -131,7 +129,8 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
 
         RemoteWebDriver driver = null;
         try {
-            driver = buildDriver(runContext);
+            var downloadsEnabled = actions.stream().anyMatch(a -> a.getAction() == ActionType.DOWNLOAD);
+            driver = buildDriver(runContext, downloadsEnabled);
             for (var action : actions) {
                 var actionType = action.getAction();
                 logger.info("Executing action [{}]: {}", actionIndex, actionType);
@@ -145,36 +144,71 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                     }
                     case CLICK -> {
                         var rSelector = renderSelector(runContext, action, actionType);
-                        driver.findElement(By.cssSelector(rSelector)).click();
+                        var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
+                        try {
+                            new WebDriverWait(driver, rWaitTimeout)
+                                .until(ExpectedConditions.elementToBeClickable(By.cssSelector(rSelector)))
+                                .click();
+                        } catch (TimeoutException e) {
+                            throw new IllegalStateException(
+                                "CLICK: element not found for selector '" + rSelector + "'", e
+                            );
+                        }
                     }
                     case TYPE -> {
                         var rSelector = renderSelector(runContext, action, actionType);
                         var rValue = runContext.render(action.getValue()).as(String.class).orElseThrow(
                             () -> new IllegalArgumentException("value is required for TYPE")
                         );
-                        driver.findElement(By.cssSelector(rSelector)).sendKeys(rValue);
+                        var rClear = runContext.render(action.getClear()).as(Boolean.class).orElse(false);
+                        var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
+                        WebElement element;
+                        try {
+                            element = new WebDriverWait(driver, rWaitTimeout)
+                                .until(ExpectedConditions.elementToBeClickable(By.cssSelector(rSelector)));
+                        } catch (TimeoutException e) {
+                            throw new IllegalStateException(
+                                "TYPE: element not found for selector '" + rSelector + "'", e
+                            );
+                        }
+                        if (Boolean.TRUE.equals(rClear)) {
+                            element.clear();
+                        }
+                        element.sendKeys(rValue);
                     }
                     case WAIT_FOR -> {
                         var rSelector = renderSelector(runContext, action, actionType);
                         var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
-                        new WebDriverWait(driver, rWaitTimeout)
-                            .until(ExpectedConditions.presenceOfElementLocated(By.cssSelector(rSelector)));
+                        var rCondition = runContext.render(action.getCondition()).as(WaitCondition.class).orElse(WaitCondition.PRESENT);
+                        var locator = By.cssSelector(rSelector);
+                        var wait = new WebDriverWait(driver, rWaitTimeout);
+                        switch (rCondition) {
+                            case PRESENT -> wait.until(ExpectedConditions.presenceOfElementLocated(locator));
+                            case VISIBLE -> wait.until(ExpectedConditions.visibilityOfElementLocated(locator));
+                            case CLICKABLE -> wait.until(ExpectedConditions.elementToBeClickable(locator));
+                        }
                     }
                     case EXTRACT_TEXT -> {
                         var rSelector = renderSelector(runContext, action, actionType);
                         var rMultiple = runContext.render(action.getMultiple()).as(Boolean.class).orElse(false);
+                        var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(10));
                         var key = outputKey(runContext, action, actionIndex, "extract");
                         warnOnKeyCollision(logger, extracted, key, actionType);
                         if (Boolean.TRUE.equals(rMultiple)) {
-                            var elements = driver.findElements(By.cssSelector(rSelector));
-                            if (elements.isEmpty()) {
-                                logger.warn("EXTRACT_TEXT: no elements matched selector '{}'", rSelector);
+                            try {
+                                new WebDriverWait(driver, rWaitTimeout)
+                                    .until(ExpectedConditions.presenceOfElementLocated(By.cssSelector(rSelector)));
+                            } catch (TimeoutException e) {
+                                logger.warn("EXTRACT_TEXT: no elements matched selector '{}' within {}", rSelector, rWaitTimeout);
                             }
+                            var elements = driver.findElements(By.cssSelector(rSelector));
                             extracted.put(key, elements.stream().map(WebElement::getText).toList());
                         } else {
                             try {
-                                extracted.put(key, driver.findElement(By.cssSelector(rSelector)).getText());
-                            } catch (NoSuchElementException e) {
+                                var element = new WebDriverWait(driver, rWaitTimeout)
+                                    .until(ExpectedConditions.visibilityOfElementLocated(By.cssSelector(rSelector)));
+                                extracted.put(key, element.getText());
+                            } catch (TimeoutException e) {
                                 throw new IllegalStateException(
                                     "EXTRACT_TEXT: element not found for selector '" + rSelector + "'", e
                                 );
@@ -182,7 +216,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                         }
                     }
                     case SCREENSHOT -> {
-                        var rName = runContext.render(action.getName()).as(String.class).orElse("screenshot.png");
+                        var rName = runContext.render(action.getName()).as(String.class).orElse("screenshot_" + actionIndex + ".png");
                         warnOnKeyCollision(logger, screenshots, rName, actionType);
                         var bytes = ((TakesScreenshot) driver).getScreenshotAs(OutputType.BYTES);
                         var uri = runContext.storage().putFile(new ByteArrayInputStream(bytes), rName);
@@ -202,22 +236,32 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                         var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(30));
                         var rMultiple = runContext.render(action.getMultiple()).as(Boolean.class).orElse(false);
 
+                        // Snapshot before the click so only files added by this action are considered:
+                        // otherwise a pre-existing file could be picked up as "the" download.
+                        List<String> before;
+                        try {
+                            before = driver.getDownloadableFiles();
+                        } catch (Exception e) {
+                            throw new IllegalStateException(
+                                "DOWNLOAD requires the Grid node to have managed downloads enabled "
+                                    + "(SE_NODE_ENABLE_MANAGED_DOWNLOADS=true).", e
+                            );
+                        }
+
                         // Click the trigger element if a selector is provided.
                         var rSelector = runContext.render(action.getSelector()).as(String.class).orElse(null);
                         if (rSelector != null) {
                             driver.findElement(By.cssSelector(rSelector)).click();
                         }
 
-                        if (!(driver instanceof HasDownloads)) {
-                            throw new IllegalStateException("DOWNLOAD requires a Grid node that supports managed downloads (CHROME or EDGE).");
+                        var newStableFiles = pollForNewStableFiles(driver, before, rWaitTimeout);
+                        if (!Boolean.TRUE.equals(rMultiple) && newStableFiles.size() > 1) {
+                            throw new IllegalStateException(
+                                "DOWNLOAD found " + newStableFiles.size() + " new files (" + newStableFiles
+                                    + ") but multiple is false. Set multiple: true to fetch all of them."
+                            );
                         }
-                        var hasDownloads = (HasDownloads) driver;
-                        var stableFiles = pollForStableFiles(hasDownloads, rWaitTimeout);
-
-                        if (stableFiles.isEmpty()) {
-                            throw new IllegalStateException("No stable downloadable file found.");
-                        }
-                        var toFetch = Boolean.TRUE.equals(rMultiple) ? stableFiles : List.of(stableFiles.getLast());
+                        var toFetch = Boolean.TRUE.equals(rMultiple) ? newStableFiles : List.of(newStableFiles.getFirst());
                         var tempDir = Files.createTempDirectory("kestra-selenium-download-");
                         try {
                             for (var fileName : toFetch) {
@@ -226,7 +270,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                                 if (!localFile.startsWith(tempDir)) {
                                     throw new SecurityException("Illegal filename from Grid: " + fileName);
                                 }
-                                hasDownloads.downloadFile(fileName, tempDir);
+                                driver.downloadFile(fileName, tempDir);
                                 warnOnKeyCollision(logger, downloads, fileName, actionType);
                                 try (var in = Files.newInputStream(localFile)) {
                                     var uri = runContext.storage().putFile(in, fileName);
@@ -241,7 +285,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                             // op throws, otherwise the next DOWNLOAD in the same session will
                             // re-process stale entries.
                             try {
-                                hasDownloads.deleteDownloadableFiles();
+                                driver.deleteDownloadableFiles();
                             } catch (Exception e) {
                                 logger.warn("Failed to clear Grid download list after DOWNLOAD action", e);
                             }
@@ -266,20 +310,17 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
     }
 
     /**
-     * Polls until the Grid reports at least one non-temp file that is stable across two
-     * consecutive reads. The deadline is checked after each sleep so a file that stabilizes
-     * near the boundary is not missed. Throws if no stable result is found after the deadline.
+     * Polls until the Grid reports at least one file that is both new (absent from {@code before})
+     * and stable across two consecutive reads. The deadline is checked after each sleep so a file
+     * that stabilizes near the boundary is not missed. Throws if no stable result is found after
+     * the deadline.
      */
-    private List<String> pollForStableFiles(HasDownloads hasDownloads, Duration timeout) throws InterruptedException {
+    private List<String> pollForNewStableFiles(RemoteWebDriver driver, List<String> before, Duration timeout) throws InterruptedException {
         var deadline = Instant.now().plus(timeout);
         List<String> previousStable = List.of();
 
         while (true) {
-            // Sort so stability is decided by the set of names, not the Grid's listing order.
-            var stable = hasDownloads.getDownloadableFiles().stream()
-                .filter(f -> !TEMP_DOWNLOAD_PATTERN.matcher(f).find())
-                .sorted()
-                .toList();
+            var stable = selectNewStableFiles(before, driver.getDownloadableFiles());
             if (!stable.isEmpty() && stable.equals(previousStable)) {
                 return stable;
             }
@@ -290,7 +331,20 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
             Thread.sleep(500);
         }
 
-        throw new IllegalStateException("No stable downloadable files appeared within " + timeout);
+        throw new IllegalStateException("No new stable downloadable file appeared within " + timeout);
+    }
+
+    /**
+     * Filters the Grid's current downloadable-file listing down to files that are both new
+     * (absent from {@code before}) and not still in-progress, sorted so stability comparisons
+     * do not depend on the Grid's listing order. Package-private static for unit testing.
+     */
+    static List<String> selectNewStableFiles(List<String> before, List<String> current) {
+        return current.stream()
+            .filter(f -> !before.contains(f))
+            .filter(f -> !TEMP_DOWNLOAD_PATTERN.matcher(f).find())
+            .sorted()
+            .toList();
     }
 
     private void deleteTempDir(Path dir) {
@@ -357,7 +411,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
             EXECUTE_SCRIPT (run JavaScript and capture the return value),
             DOWNLOAD (fetch files from the Selenium Grid node into Kestra internal storage;
             if selector is set, clicks it first to trigger the download;
-            most reliable with CHROME or EDGE, which support managed downloads natively).
+            requires the Grid node to have managed downloads enabled, SE_NODE_ENABLE_MANAGED_DOWNLOADS=true).
             """)
         @NotNull
         @PluginProperty(group = "main")
@@ -379,11 +433,15 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         @PluginProperty(group = "main", secret = true)
         private Property<String> value;
 
+        @Schema(title = "Clear before typing", description = "When true, TYPE clears the element's existing value before sending keys. Defaults to false.")
+        @PluginProperty(group = "processing")
+        private Property<Boolean> clear;
+
         @Schema(title = "Multiple", description = "When true, EXTRACT_TEXT returns a list of texts from all matching elements. Defaults to false.")
         @PluginProperty(group = "processing")
         private Property<Boolean> multiple;
 
-        @Schema(title = "Screenshot filename", description = "Output filename for SCREENSHOT. Defaults to screenshot.png.")
+        @Schema(title = "Screenshot filename", description = "Output filename for SCREENSHOT. Defaults to screenshot_<actionIndex>.png.")
         @PluginProperty(group = "destination")
         private Property<String> name;
 
@@ -391,7 +449,19 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         @PluginProperty(group = "main")
         private Property<String> script;
 
-        @Schema(title = "Wait timeout", description = "Maximum time to wait for WAIT_FOR or DOWNLOAD. Defaults to PT10S for WAIT_FOR, PT30S for DOWNLOAD.")
+        @Schema(title = "Wait condition", description = """
+            Element state to wait for in WAIT_FOR: PRESENT (exists in the DOM), VISIBLE (also
+            displayed), or CLICKABLE (visible and enabled). Defaults to PRESENT.
+            """)
+        @PluginProperty(group = "reliability")
+        private Property<WaitCondition> condition;
+
+        @Schema(title = "Wait timeout", description = """
+            Maximum time to wait for the target element or file. Applies to CLICK and TYPE
+            (element clickable, default PT10S), WAIT_FOR (default PT10S), EXTRACT_TEXT (element
+            visible when multiple is false, presence of at least one element when true, default
+            PT10S), and DOWNLOAD (new stable file, default PT30S).
+            """)
         @PluginProperty(group = "reliability")
         private Property<Duration> waitTimeout;
     }
@@ -405,6 +475,12 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         SCREENSHOT,
         EXECUTE_SCRIPT,
         DOWNLOAD
+    }
+
+    public enum WaitCondition {
+        PRESENT,
+        VISIBLE,
+        CLICKABLE
     }
 
     @Builder
