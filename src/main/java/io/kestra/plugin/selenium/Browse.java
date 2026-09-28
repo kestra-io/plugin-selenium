@@ -158,6 +158,9 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         Map<String, URI> downloads = new HashMap<>();
         var actionIndex = 0;
         var rMaxOutputSize = runContext.render(maxOutputSize).as(Long.class).orElse(DEFAULT_MAX_OUTPUT_SIZE);
+        if (rMaxOutputSize < 1) {
+            throw new IllegalArgumentException("maxOutputSize must be at least 1 byte, got " + rMaxOutputSize);
+        }
 
         RemoteWebDriver driver = null;
         try {
@@ -276,8 +279,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                             var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(30));
                             var rMultiple = runContext.render(action.getMultiple()).as(Boolean.class).orElse(false);
 
-                            // Clear leftovers from an earlier CLICK-triggered download before snapshotting,
-                            // so this action never picks up a file it did not trigger.
+                            // Clear leftovers from earlier CLICK-triggered downloads before snapshotting.
                             try {
                                 driver.deleteDownloadableFiles();
                             } catch (WebDriverException e) {
@@ -355,8 +357,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         } finally {
             // Emit metric before quitting so it is always recorded, even on failure.
             runContext.metric(Counter.of("actions.count", actionIndex));
-            // getAndSet(null) races kill(), which also quits via activeDriver: whichever runs first
-            // wins the reference and the other becomes a no-op, so the session is quit exactly once.
+            // Shared with kill(): whichever calls getAndSet(null) first quits the session.
             Optional.ofNullable(activeDriver.getAndSet(null)).ifPresent(RemoteWebDriver::quit);
         }
 
@@ -369,7 +370,6 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
     }
 
     // Quits the live session so a killed or timed-out execution does not leak it on the Grid.
-    // May run on a different thread than run(); see the getAndSet(null) race note in its finally block.
     @Override
     public void kill() {
         Optional.ofNullable(activeDriver.getAndSet(null)).ifPresent(driver -> {
@@ -513,11 +513,9 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
             SCREENSHOT (capture the viewport),
             EXECUTE_SCRIPT (run JavaScript and capture the return value),
             DOWNLOAD (fetch files from the Selenium Grid node into Kestra internal storage;
-            if selector is set, waits for it to be clickable and clicks it first to trigger the download;
-            requires the Grid node to have managed downloads enabled, SE_NODE_ENABLE_MANAGED_DOWNLOADS=true;
-            trigger the download through this selector rather than a preceding CLICK action, since DOWNLOAD
-            clears the Grid node's download list right before it snapshots it, and a download already
-            started by an earlier CLICK could still be in flight and picked up inconsistently).
+            if selector is set, waits for it to be clickable and clicks it to trigger the download;
+            trigger downloads through this selector, not a separate CLICK action;
+            requires the Grid node to have managed downloads enabled, SE_NODE_ENABLE_MANAGED_DOWNLOADS=true).
             """)
         @NotNull
         @PluginProperty(group = "main")
