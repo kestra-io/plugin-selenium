@@ -39,20 +39,45 @@ at least one matching element but falls back to an empty list with a warning if 
 `WAIT_FOR` accepts a `condition` (`PRESENT`, `VISIBLE`, `CLICKABLE`, default `PRESENT`). `TYPE`
 accepts `clear: true` to clear the field before sending keys.
 
-`DOWNLOAD` only considers files that appear after the action starts, so a stale file already on the
-Grid node is never picked up. If more than one new file appears and `multiple` is not set to `true`,
-the task fails and lists the file names.
+`DOWNLOAD` clears the Grid node's downloadable-files list right before it snapshots it, so only files
+appearing after the action starts are ever picked up. Trigger the download through `DOWNLOAD`'s own
+`selector` rather than a preceding `CLICK` action: a download already started by an earlier click may
+still be in flight and get picked up inconsistently. If more than one new file appears and `multiple`
+is not set to `true`, the task fails and lists the file names.
+
+Selenium loads the whole downloaded file into memory before it reaches Kestra storage; there is no
+size cap on it, so avoid `DOWNLOAD` for very large files.
+
+`maxOutputSize` (default `1048576` bytes, 1 MB) caps the combined JSON-serialized size of `extracted`
+and `scriptResults` accumulated across actions; exceeding it fails the task instead of growing the
+output further. Use `SCREENSHOT` or a narrower selector to capture large content instead, or raise
+the limit.
+
+Killing the execution (or a worker timeout) quits the live browser session on the Grid instead of
+leaving it running until it times out on its own.
 
 ## Connection properties
 
 | Property | Required | Default | Description |
 |---|---|---|---|
-| `remoteUrl` | yes | | Selenium Grid WebDriver URL. |
-| `browser` | no | `CHROME` | Browser type: `CHROME`, `FIREFOX`, `EDGE`. |
+| `remoteUrl` | yes | | Selenium Grid WebDriver URL. Only `http`/`https` schemes are accepted. |
+| `browser` | no | `CHROME` | Browser type: `CHROME`, `FIREFOX`, `EDGE`. Chrome runs with `--no-sandbox`, required in most containerized Grid nodes. |
 | `headless` | no | `true` | Run without a display. |
 | `pageLoadTimeout` | no | `PT30S` | Maximum time to wait for page load. |
 | `username` / `password` | no | | HTTP basic auth for the Grid endpoint. Both must be set together, or neither. `password` is masked as a secret. |
 | `capabilities` | no | | Extra capabilities merged into browser options. Values are passed unvalidated; only set from trusted sources. |
+| `maxOutputSize` | no | `1048576` (1 MB) | Byte cap on the combined size of `extracted` + `scriptResults`. |
+
+## Running a Grid
+
+For local runs, start a standalone Grid with managed downloads enabled:
+
+```bash
+docker run -d -p 4444:4444 --shm-size=2g -e SE_NODE_ENABLE_MANAGED_DOWNLOADS=true selenium/standalone-chromium:4.27.0
+```
+
+Then point `remoteUrl` at `http://localhost:4444`. Hosted Grids (commercial cloud providers) typically
+need `remoteUrl` plus `username`/`password` for HTTP basic auth instead.
 
 ## Examples
 

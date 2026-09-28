@@ -1,5 +1,7 @@
 package io.kestra.plugin.selenium;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.kestra.core.models.annotations.Example;
 import io.kestra.core.models.annotations.Metric;
 import io.kestra.core.models.annotations.Plugin;
@@ -8,7 +10,10 @@ import io.kestra.core.models.executions.metrics.Counter;
 import io.kestra.core.models.property.Property;
 import io.kestra.core.models.tasks.RunnableTask;
 import io.kestra.core.runners.RunContext;
+import io.kestra.core.serializers.JacksonMapper;
 import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import lombok.AccessLevel;
@@ -30,6 +35,7 @@ import org.openqa.selenium.remote.RemoteWebDriver;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.net.URI;
@@ -41,6 +47,9 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 @SuperBuilder
@@ -111,12 +120,33 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         "\\.crdownload$|\\.part$|\\.tmp$|^\\.com\\.google\\.Chrome\\.|^\\.org\\.chromium\\.Chromium\\.|^\\.download$"
     );
 
-    // Plain List, not Property<List>, to avoid Jackson polymorphism issues with Action subtypes.
+    private static final long DEFAULT_MAX_OUTPUT_SIZE = 1_048_576L;
+    private static final int MAX_SCRIPT_RESULT_DEPTH = 32;
+    private static final ObjectMapper MAPPER = JacksonMapper.ofJson();
+
     @Schema(title = "Actions", description = "Ordered list of browser actions to execute within a single session.")
     @NotNull
     @NotEmpty
     @PluginProperty(group = "main")
-    private List<Action> actions;
+    private List<@Valid Action> actions;
+
+    @Schema(title = "Maximum output size", description = """
+        Upper bound, in bytes, on the combined JSON-serialized size of `extracted` and `scriptResults`
+        accumulated so far. Checked after each EXTRACT_TEXT and EXECUTE_SCRIPT action; exceeding it fails
+        the task instead of growing the output further. Defaults to 1048576 (1 MB). Use SCREENSHOT or a
+        narrower selector to capture large content instead, or raise this value if larger output is expected.
+        """)
+    @Builder.Default
+    @PluginProperty(group = "advanced")
+    private Property<@Min(1) Long> maxOutputSize = Property.ofValue(DEFAULT_MAX_OUTPUT_SIZE);
+
+    // Excluded from schema/JSON: it is runtime state (the live session), not a declarative task property.
+    @JsonIgnore
+    @Getter(AccessLevel.NONE)
+    @EqualsAndHashCode.Exclude
+    @ToString.Exclude
+    @Builder.Default
+    private final transient AtomicReference<RemoteWebDriver> activeDriver = new AtomicReference<>();
 
     @Override
     public Output run(RunContext runContext) throws Exception {
@@ -126,13 +156,15 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         Map<String, URI> screenshots = new HashMap<>();
         Map<String, Object> scriptResults = new HashMap<>();
         Map<String, URI> downloads = new HashMap<>();
-        int actionIndex = 0;
+        var actionIndex = 0;
+        var rMaxOutputSize = runContext.render(maxOutputSize).as(Long.class).orElse(DEFAULT_MAX_OUTPUT_SIZE);
 
         RemoteWebDriver driver = null;
         try {
             var downloadsEnabled = actions.stream().anyMatch(a -> a.getAction() == ActionType.DOWNLOAD);
             try {
                 driver = buildDriver(runContext, downloadsEnabled);
+                activeDriver.set(driver);
             } catch (WebDriverException e) {
                 throw new IllegalStateException("Failed to create a browser session on the Grid: " + shortMessage(e));
             }
@@ -220,6 +252,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                                     );
                                 }
                             }
+                            checkOutputSize(actionType, rMaxOutputSize, extracted, scriptResults);
                         }
                         case SCREENSHOT -> {
                             var rName = runContext.render(action.getName()).as(String.class).orElse("screenshot_" + actionIndex + ".png");
@@ -237,26 +270,41 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                             var result = ((JavascriptExecutor) driver).executeScript(rScript);
                             assertSerializable(result);
                             scriptResults.put(key, result);
+                            checkOutputSize(actionType, rMaxOutputSize, extracted, scriptResults);
                         }
                         case DOWNLOAD -> {
                             var rWaitTimeout = runContext.render(action.getWaitTimeout()).as(Duration.class).orElse(Duration.ofSeconds(30));
                             var rMultiple = runContext.render(action.getMultiple()).as(Boolean.class).orElse(false);
 
+                            // Clear leftovers from an earlier CLICK-triggered download before snapshotting,
+                            // so this action never picks up a file it did not trigger.
+                            try {
+                                driver.deleteDownloadableFiles();
+                            } catch (WebDriverException e) {
+                                throw managedDownloadsRequired(e);
+                            }
+
                             // Snapshot before the click so only files added by this action are fetched.
+                            // A download started by an earlier CLICK could still be in flight and land here.
                             List<String> before;
                             try {
                                 before = driver.getDownloadableFiles();
-                            } catch (Exception e) {
-                                throw new IllegalStateException(
-                                    "DOWNLOAD requires the Grid node to have managed downloads enabled "
-                                        + "(SE_NODE_ENABLE_MANAGED_DOWNLOADS=true): " + shortMessage(e)
-                                );
+                            } catch (WebDriverException e) {
+                                throw managedDownloadsRequired(e);
                             }
 
                             // Click the trigger element if a selector is provided.
                             var rSelector = runContext.render(action.getSelector()).as(String.class).orElse(null);
                             if (rSelector != null) {
-                                driver.findElement(By.cssSelector(rSelector)).click();
+                                try {
+                                    new WebDriverWait(driver, rWaitTimeout)
+                                        .until(ExpectedConditions.elementToBeClickable(By.cssSelector(rSelector)))
+                                        .click();
+                                } catch (TimeoutException e) {
+                                    throw new IllegalStateException(
+                                        "DOWNLOAD: element not found for selector '" + rSelector + "' within " + rWaitTimeout
+                                    );
+                                }
                             }
 
                             var newStableFiles = pollForNewStableFiles(driver, before, rWaitTimeout);
@@ -284,7 +332,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
                                     }
                                 }
                             } finally {
-                                deleteTempDir(tempDir);
+                                deleteTempDir(logger, tempDir);
                                 // Clear the Grid node's download list so a subsequent DOWNLOAD action
                                 // does not re-see files from this action. Must run even when a per-file
                                 // op throws, otherwise the next DOWNLOAD in the same session will
@@ -307,7 +355,9 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         } finally {
             // Emit metric before quitting so it is always recorded, even on failure.
             runContext.metric(Counter.of("actions.count", actionIndex));
-            if (driver != null) driver.quit();
+            // getAndSet(null) races kill(), which also quits via activeDriver: whichever runs first
+            // wins the reference and the other becomes a no-op, so the session is quit exactly once.
+            Optional.ofNullable(activeDriver.getAndSet(null)).ifPresent(RemoteWebDriver::quit);
         }
 
         return Output.builder()
@@ -318,6 +368,20 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
             .build();
     }
 
+    // Quits the live session so a killed or timed-out execution does not leak it on the Grid.
+    // May run on a different thread than run(); see the getAndSet(null) race note in its finally block.
+    @Override
+    public void kill() {
+        Optional.ofNullable(activeDriver.getAndSet(null)).ifPresent(driver -> {
+            try {
+                driver.quit();
+            } catch (Exception e) {
+                LoggerFactory.getLogger(Browse.class).warn("Failed to quit browser session on kill: {}", shortMessage(e));
+            }
+        });
+    }
+
+    // Grid's HasDownloads API has no completion event, so sleep-polling is the only way to detect a finished download.
     // Polls until the new, non-temp file set is non-empty and identical across two reads.
     private List<String> pollForNewStableFiles(RemoteWebDriver driver, List<String> before, Duration timeout) throws InterruptedException {
         var deadline = Instant.now().plus(timeout);
@@ -340,8 +404,9 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
 
     // New, finished files only, sorted so stability does not depend on Grid listing order.
     static List<String> selectNewStableFiles(List<String> before, List<String> current) {
+        var beforeSet = Set.copyOf(before);
         return current.stream()
-            .filter(f -> !before.contains(f))
+            .filter(f -> !beforeSet.contains(f))
             .filter(f -> !TEMP_DOWNLOAD_PATTERN.matcher(f).find())
             .sorted()
             .toList();
@@ -356,16 +421,36 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
         return raw.lines().findFirst().orElse(raw).strip();
     }
 
-    private void deleteTempDir(Path dir) {
+    private static IllegalStateException managedDownloadsRequired(WebDriverException e) {
+        return new IllegalStateException(
+            "DOWNLOAD requires the Grid node to have managed downloads enabled "
+                + "(SE_NODE_ENABLE_MANAGED_DOWNLOADS=true): " + shortMessage(e)
+        );
+    }
+
+    private void checkOutputSize(ActionType actionType, long rMaxOutputSize, Map<String, Object> extracted, Map<String, Object> scriptResults) throws Exception {
+        var currentSize = (long) MAPPER.writeValueAsBytes(extracted).length + MAPPER.writeValueAsBytes(scriptResults).length;
+        if (currentSize > rMaxOutputSize) {
+            throw new IllegalStateException(
+                actionType + ": accumulated EXTRACT_TEXT/EXECUTE_SCRIPT output is " + currentSize
+                    + " bytes, exceeding maxOutputSize (" + rMaxOutputSize + " bytes). Use SCREENSHOT or a "
+                    + "narrower selector to capture large content, or raise maxOutputSize."
+            );
+        }
+    }
+
+    private void deleteTempDir(Logger logger, Path dir) {
         try (var walk = Files.walk(dir)) {
             walk.sorted(Comparator.reverseOrder())
                 .forEach(p -> {
                     try {
                         Files.deleteIfExists(p);
-                    } catch (Exception ignored) {
+                    } catch (Exception e) {
+                        logger.warn("Failed to delete temp download file '{}': {}", p, e.getMessage());
                     }
                 });
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            logger.warn("Failed to clean up temp download directory '{}': {}", dir, e.getMessage());
         }
     }
 
@@ -378,9 +463,18 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
     }
 
     private boolean containsWebElement(Object value) {
+        return containsWebElement(value, 0);
+    }
+
+    private boolean containsWebElement(Object value, int depth) {
+        if (depth > MAX_SCRIPT_RESULT_DEPTH) {
+            throw new IllegalArgumentException(
+                "EXECUTE_SCRIPT result nested too deeply (max depth " + MAX_SCRIPT_RESULT_DEPTH + ")"
+            );
+        }
         if (value instanceof WebElement) return true;
-        if (value instanceof List<?> l) return l.stream().anyMatch(this::containsWebElement);
-        if (value instanceof Map<?, ?> m) return m.values().stream().anyMatch(this::containsWebElement);
+        if (value instanceof List<?> l) return l.stream().anyMatch(v -> containsWebElement(v, depth + 1));
+        if (value instanceof Map<?, ?> m) return m.values().stream().anyMatch(v -> containsWebElement(v, depth + 1));
         return false;
     }
 
@@ -419,8 +513,11 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
             SCREENSHOT (capture the viewport),
             EXECUTE_SCRIPT (run JavaScript and capture the return value),
             DOWNLOAD (fetch files from the Selenium Grid node into Kestra internal storage;
-            if selector is set, clicks it first to trigger the download;
-            requires the Grid node to have managed downloads enabled, SE_NODE_ENABLE_MANAGED_DOWNLOADS=true).
+            if selector is set, waits for it to be clickable and clicks it first to trigger the download;
+            requires the Grid node to have managed downloads enabled, SE_NODE_ENABLE_MANAGED_DOWNLOADS=true;
+            trigger the download through this selector rather than a preceding CLICK action, since DOWNLOAD
+            clears the Grid node's download list right before it snapshots it, and a download already
+            started by an earlier CLICK could still be in flight and picked up inconsistently).
             """)
         @NotNull
         @PluginProperty(group = "main")
@@ -440,6 +537,7 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
 
         @Schema(title = "Value", description = "Text to type into the element for TYPE.")
         @PluginProperty(group = "main", secret = true)
+        @ToString.Exclude
         private Property<String> value;
 
         @Schema(title = "Clear before typing", description = "When true, TYPE clears the element's existing value before sending keys. Defaults to false.")
@@ -469,7 +567,8 @@ public class Browse extends AbstractSeleniumTask implements RunnableTask<Browse.
             Maximum time to wait for the target element or file. Applies to CLICK and TYPE
             (element clickable, default PT10S), WAIT_FOR (default PT10S), EXTRACT_TEXT (element
             visible when multiple is false, presence of at least one element when true, default
-            PT10S), and DOWNLOAD (new stable file, default PT30S).
+            PT10S), and DOWNLOAD (its own selector's element clickable, then the new stable file,
+            both using the same value, default PT30S).
             """)
         @PluginProperty(group = "reliability")
         private Property<Duration> waitTimeout;

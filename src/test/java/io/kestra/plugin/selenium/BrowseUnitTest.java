@@ -9,6 +9,7 @@ import jakarta.inject.Inject;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.UUID;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
@@ -76,5 +77,18 @@ class BrowseUnitTest {
 
         assertThat(renderedId, is("myKey"));
         assertThat(renderedFallback, is("extract_3"));
+    }
+
+    @Test
+    void givenNoActiveDriver_whenKilled_thenNoOp() {
+        var task = Browse.builder()
+            .id("kill-test-" + UUID.randomUUID())
+            .type(Browse.class.getName())
+            .remoteUrl(Property.ofValue("http://localhost:4444"))
+            .actions(List.of(Action.builder().action(ActionType.NAVIGATE).url(Property.ofValue("https://example.com")).build()))
+            .build();
+
+        task.kill();
+        task.kill();
     }
 }

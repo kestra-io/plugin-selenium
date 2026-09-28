@@ -46,7 +46,7 @@ public abstract class AbstractSeleniumTask extends Task {
     @PluginProperty(group = "connection")
     private Property<String> remoteUrl;
 
-    @Schema(title = "Browser", description = "Browser to use. Defaults to CHROME.")
+    @Schema(title = "Browser", description = "Browser to use. One of CHROME, FIREFOX, EDGE. Defaults to CHROME.")
     @PluginProperty(group = "connection")
     private Property<BrowserType> browser;
 
@@ -91,7 +91,7 @@ public abstract class AbstractSeleniumTask extends Task {
             throw new IllegalArgumentException("Both username and password must be set for Grid basic auth, or neither.");
         }
 
-        var gridUri = URI.create(rUrl);
+        var gridUri = parseGridUri(rUrl);
         var clientConfig = ClientConfig.defaultConfig().baseUri(gridUri);
         if (rUsername != null) {
             clientConfig = clientConfig.authenticateAs(new UsernameAndPassword(rUsername, rPassword));
@@ -146,6 +146,29 @@ public abstract class AbstractSeleniumTask extends Task {
             throw e;
         }
         return driver;
+    }
+
+    // Package-private so AbstractSeleniumTaskTest can exercise it without a live Grid.
+    static URI parseGridUri(String rUrl) {
+        var hasCredentials = rUrl.contains("@");
+        URI uri;
+        try {
+            uri = URI.create(rUrl);
+        } catch (IllegalArgumentException e) {
+            // The underlying URISyntaxException message echoes the raw input, so it is withheld too when it may contain userinfo.
+            throw hasCredentials
+                ? new IllegalArgumentException("Invalid remoteUrl: malformed URL (message withheld, URL contains credentials)")
+                : new IllegalArgumentException("Invalid remoteUrl '" + rUrl + "': " + e.getMessage(), e);
+        }
+        var scheme = uri.getScheme();
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+            throw new IllegalArgumentException(
+                hasCredentials
+                    ? "Invalid remoteUrl: scheme must be http or https (URL withheld, contains credentials)"
+                    : "Invalid remoteUrl '" + rUrl + "': scheme must be http or https, got '" + scheme + "'"
+            );
+        }
+        return uri;
     }
 
     public enum BrowserType {

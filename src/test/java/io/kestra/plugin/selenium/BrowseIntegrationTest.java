@@ -248,6 +248,29 @@ class BrowseIntegrationTest {
     }
 
     @Test
+    void givenTinyMaxOutputSize_whenExtractText_thenFailsNamingTheLimit() {
+        var gridUrl = System.getenv("SELENIUM_GRID_URL");
+        var dataUrl = "data:text/html,<html><body><h1>Kestra Selenium output size guard test</h1></body></html>";
+
+        var task = Browse.builder()
+            .id("max-output-size-test-" + UUID.randomUUID())
+            .type(Browse.class.getName())
+            .remoteUrl(Property.ofValue(gridUrl))
+            .maxOutputSize(Property.ofValue(10L))
+            .actions(List.of(
+                Action.builder().action(ActionType.NAVIGATE).url(Property.ofValue(dataUrl)).build(),
+                Action.builder().action(ActionType.EXTRACT_TEXT).id(Property.ofValue("heading"))
+                    .selector(Property.ofValue("h1")).build()
+            ))
+            .build();
+
+        var runContext = runContextFactory.of();
+
+        var e = assertThrows(IllegalStateException.class, () -> task.run(runContext));
+        assertThat(e.getMessage(), containsString("maxOutputSize"));
+    }
+
+    @Test
     void givenTwoUnnamedScreenshots_whenScreenshotAction_thenTwoKeysProduced() throws Exception {
         var gridUrl = System.getenv("SELENIUM_GRID_URL");
         var dataUrl = "data:text/html,<html><body><h1>shot</h1></body></html>";
