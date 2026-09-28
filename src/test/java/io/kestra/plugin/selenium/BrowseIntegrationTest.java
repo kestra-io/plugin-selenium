@@ -12,6 +12,7 @@ import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -60,6 +61,9 @@ class BrowseIntegrationTest {
     void givenFileDownloadPage_whenDownloadAction_thenFileStoredInKestra() throws Exception {
         var gridUrl = System.getenv("SELENIUM_GRID_URL");
 
+        // Served by the "files" service in docker-compose-ci.yml, so no external site is involved.
+        var filesUrl = Optional.ofNullable(System.getenv("SELENIUM_FILES_URL")).orElse("http://localhost/");
+
         var task = Browse.builder()
             .id("download-test-" + UUID.randomUUID())
             .type(Browse.class.getName())
@@ -67,16 +71,11 @@ class BrowseIntegrationTest {
             .actions(List.of(
                 Action.builder()
                     .action(ActionType.NAVIGATE)
-                    .url(Property.ofValue("https://the-internet.herokuapp.com/download"))
-                    .build(),
-                Action.builder()
-                    .action(ActionType.WAIT_FOR)
-                    .selector(Property.ofValue(".example a"))
-                    .waitTimeout(Property.ofValue(Duration.ofSeconds(15)))
+                    .url(Property.ofValue(filesUrl))
                     .build(),
                 Action.builder()
                     .action(ActionType.DOWNLOAD)
-                    .selector(Property.ofValue(".example a:first-of-type"))
+                    .selector(Property.ofValue("#dl"))
                     .waitTimeout(Property.ofValue(Duration.ofSeconds(30)))
                     .build()
             ))
@@ -85,17 +84,13 @@ class BrowseIntegrationTest {
         var runContext = runContextFactory.of();
         var output = task.run(runContext);
 
-        assertThat(output.getDownloads(), not(anEmptyMap()));
-        output.getDownloads().forEach((name, uri) -> {
-            assertThat(name, not(emptyString()));
-            assertThat(uri, notNullValue());
-            assertThat(uri.toString(), startsWith("kestra://"));
-            assertThat(
-                "Stored filename must not match a temp/in-progress pattern: " + name,
-                Browse.TEMP_DOWNLOAD_PATTERN.matcher(name).find(),
-                is(false)
-            );
-        });
+        assertThat(output.getDownloads(), hasKey("hello.bin"));
+        assertThat(output.getDownloads().size(), is(1));
+        var uri = output.getDownloads().get("hello.bin");
+        assertThat(uri.toString(), startsWith("kestra://"));
+        try (var in = runContext.storage().getFile(uri)) {
+            assertThat(new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8), is("hello kestra"));
+        }
     }
 
     @Test

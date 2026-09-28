@@ -23,3 +23,11 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # Static file server for the DOWNLOAD test. Shares the Grid's network so Chrome sees it as
+  # http://localhost/, which it trusts (plain-http downloads from other hosts are held for a prompt).
+  files:
+    image: nginx:1.27-alpine
+    network_mode: "service:selenium"
+    volumes:
+      - ./src/test/resources/downloads:/usr/share/nginx/html:ro
