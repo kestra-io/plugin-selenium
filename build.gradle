@@ -51,7 +51,7 @@ dependencies {
     compileOnly group: "io.kestra", name: "script", version: kestraVersion
 
     // selenium
-    implementation "org.seleniumhq.selenium:selenium-java:4.27.0"
+    implementation "org.seleniumhq.selenium:selenium-java:4.50.0"
 }
 
 
